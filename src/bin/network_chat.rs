@@ -1,4 +1,4 @@
-//src/bin/network_chat.rs
+// src/bin/network_chat.rs
 use fltk::{
     app,
     prelude::*,
@@ -26,6 +26,33 @@ struct NetworkChat {
 
 impl NetworkChat {
     fn new(mode: &str, address: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        // Initialize FLTK application first
+        let app = app::App::default().with_scheme(app::Scheme::Gtk);
+        
+        // Create GUI components
+        let mut window = Window::new(100, 100, 400, 300, format!("Network Chat - {}", mode).as_str());
+        
+        let mut pack = Pack::new(10, 10, 380, 280, "");
+        pack.set_spacing(10);
+        
+        // Message display area
+        let display_buffer = TextBuffer::default();
+        let mut text_display = TextDisplay::new(0, 0, 380, 200, "");
+        text_display.set_buffer(display_buffer.clone());
+        
+        // Input area
+        let input = Input::new(0, 0, 300, 30, "");
+        let send_button = Button::new(310, 0, 70, 30, "Send");
+        
+        pack.end();
+        window.end();
+        
+        // Show the window before establishing connection
+        window.show();
+        app::wait();
+        
+        println!("Establishing connection...");
+        
         // Connect or create server based on mode
         let stream = match mode {
             "server" => {
@@ -46,24 +73,6 @@ impl NetworkChat {
         // Configure stream
         stream.set_nonblocking(true)?;
         
-        // Create GUI
-        let _app = app::App::default();
-        let mut window = Window::new(100, 100, 400, 300, format!("Chat - {}", mode).as_str());
-        
-        let mut pack = Pack::new(10, 10, 380, 280, "");
-        pack.set_spacing(10);
-        
-        let display_buffer = TextBuffer::default();
-        let mut text_display = TextDisplay::new(0, 0, 380, 200, "");
-        text_display.set_buffer(display_buffer.clone());
-        
-        let input = Input::new(0, 0, 300, 30, "");
-        let send_button = Button::new(310, 0, 70, 30, "Send");
-        
-        pack.end();
-        window.end();
-        window.show();
-        
         Ok(NetworkChat {
             window,
             input,
@@ -75,11 +84,11 @@ impl NetworkChat {
     }
     
     fn run(&mut self) {
+        // Set up send button callback
         let mut stream_write = self.stream.try_clone().expect("Failed to clone stream");
         let mut input = self.input.clone();
         let mut display_buffer = self.display_buffer.clone();
         
-        // Set up send button callback
         self.send_button.set_callback(move |_| {
             let message = input.value();
             if !message.is_empty() {
@@ -116,6 +125,7 @@ impl NetworkChat {
             }
         });
         
+        // Main event loop
         while self.window.shown() {
             app::wait();
         }
@@ -126,10 +136,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     
     if args.len() != 3 {
-        println!("Usage: cargo run --bin simple_chat <mode> <address>");
+        println!("Usage: cargo run --bin network_chat <mode> <address>");
         println!("\nExamples:");
-        println!("  Server: cargo run --bin simple_chat server 0.0.0.0:8080");
-        println!("  Client: cargo run --bin simple_chat client 192.168.1.100:8080");
+        println!("  Server: cargo run --bin network_chat server 0.0.0.0:8080");
+        println!("  Client: cargo run --bin network_chat client 192.168.1.100:8080");
         return;
     }
     
