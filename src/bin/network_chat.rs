@@ -18,6 +18,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+enum Message {
+    UpdateDisplay(String),
+    Error(String),
+}
+
 struct NetworkChat {
     app: app::App,  // Keep app instance alive
     window: Window,
@@ -245,9 +250,9 @@ impl NetworkChat {
                 }
             });
             
-            // Set up message receiving thread
+            // Set up message receiving thread with a channel for UI updates
             let mut stream_read = stream.try_clone().expect("Failed to clone stream");
-            let mut display_buffer = self.display_buffer.clone();
+            let (sender, receiver) = app::channel::<Message>();
             
             thread::spawn(move || {
                 let mut buffer = [0u8; 1024];
@@ -255,28 +260,41 @@ impl NetworkChat {
                     match stream_read.read(&mut buffer) {
                         Ok(n) if n > 0 => {
                             if let Ok(message) = String::from_utf8(buffer[..n].to_vec()) {
-                                display_buffer.append(&format!("Other: {}", message));
-                                app::awake();
-                                app::flush();
+                                sender.send(Message::UpdateDisplay(format!("Other: {}", message)));
                             }
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(50));
                         }
                         Err(e) => {
-                            display_buffer.append(&format!("Error reading: {}\n", e));
-                            app::awake();
-                            app::flush();
+                            sender.send(Message::Error(format!("Error reading: {}\n", e)));
                             thread::sleep(Duration::from_secs(1));
                         }
                         _ => thread::sleep(Duration::from_millis(50)),
                     }
                 }
             });
-        }
-        
-        while self.window.shown() {
-            app::wait();
+
+            // Handle received messages in the main thread
+            let mut display_buffer = self.display_buffer.clone();
+            while self.window.shown() {
+                // Handle received messages
+                if let Some(msg) = receiver.recv() {
+                    match msg {
+                        Message::UpdateDisplay(text) => {
+                            display_buffer.append(&text);
+                        }
+                        Message::Error(text) => {
+                            display_buffer.append(&text);
+                        }
+                    }
+                }
+                app::wait();
+            }
+        } else {
+            while self.window.shown() {
+                app::wait();
+            }
         }
     }
 }
