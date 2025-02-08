@@ -1,0 +1,15 @@
+# Cargo.toml
+[package]
+name = "socat_chat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fltk = "1.4"
+serialport = "4.2"
+anyhow = "1.0"
+crossbeam-channel = "0.5"
+
+[[bin]]
+name = "simple_chat"
+path = "src/bin/simple_chat.rs"
