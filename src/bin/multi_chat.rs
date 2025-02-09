@@ -1,4 +1,4 @@
-// src/bin/network_chat.rs
+// src/bin/multi_chat.rs
 use fltk::{
     app,
     prelude::*,
@@ -16,56 +16,63 @@ use std::{
     thread,
     time::Duration,
     sync::{Arc, Mutex},
+    collections::HashMap,
 };
 
 enum Message {
     UpdateDisplay(String),
     Error(String),
+    UserList(String),
 }
 
-struct NetworkChat {
-    app: app::App,  // Keep app instance alive
+struct MultiChat {
+    app: app::App,
     window: Window,
     input: Input,
     send_button: Button,
     text_display: TextDisplay,
     display_buffer: TextBuffer,
     status_label: Frame,
+    users_label: Frame,
     stream: Option<TcpStream>,
+    username: String,
 }
 
-impl NetworkChat {
-    fn new(mode: String, _address: String) -> Self {
+type ClientMap = Arc<Mutex<HashMap<String, TcpStream>>>;
+
+impl MultiChat {
+    fn new(mode: String, username: String) -> Self {
         let app = app::App::default().with_scheme(app::Scheme::Gtk);
         
-        // Create the window title string first
-        let title = format!("Network Chat - {}", mode);
-        let mut window = Window::new(100, 100, 400, 350, &*title);
+        let title = format!("Multi Chat - {} - {}", mode, username);
+        let mut window = Window::new(100, 100, 400, 450, &*title);
         
-        let mut pack = Pack::new(10, 10, 380, 330, "");
+        let mut pack = Pack::new(10, 10, 380, 430, "");
         pack.set_spacing(10);
         
-        // Status label at the top
         let mut status_label = Frame::new(0, 0, 380, 30, "Status: Connecting...");
         status_label.set_label_color(Color::Red);
         
-        // Message display area
+        let mut users_label = Frame::new(200, 0, 180, 30, "Users: 0");
+        users_label.set_label_color(Color::Blue);
+        
         let display_buffer = TextBuffer::default();
         let mut text_display = TextDisplay::new(0, 0, 380, 200, "");
         text_display.set_buffer(display_buffer.clone());
         text_display.set_frame(FrameType::FlatBox);
         text_display.set_color(Color::White);
         
-        // Input area
-        let input = Input::new(0, 0, 300, 30, "");
-        let mut send_button = Button::new(310, 0, 70, 30, "Send");
-        send_button.deactivate(); // Disabled until connected
+        let mut input = Input::new(0, 0, 300, 30, "");
+        let mut send_button = Button::new(300, 0, 80, 30, "Send");
+        send_button.set_color(Color::from_rgb(50, 50, 255));
+        send_button.set_label_color(Color::White);
+        send_button.deactivate();
         
         pack.end();
         window.end();
         window.show();
         
-        NetworkChat {
+        MultiChat {
             app,
             window,
             input,
@@ -73,54 +80,61 @@ impl NetworkChat {
             text_display,
             display_buffer,
             status_label,
+            users_label,
             stream: None,
+            username,
         }
     }
     
     fn connect(&mut self, mode: String, address: String) {
-        let (sender, receiver) = app::channel::<String>();
+        let (sender, receiver) = app::channel::<Message>();
         let stream_container = Arc::new(Mutex::new(None));
         let stream_container_clone = Arc::clone(&stream_container);
-        let address_clone = address.clone();
+        let username = self.username.clone();
 
         thread::spawn(move || {
             let result = match mode.as_str() {
                 "server" => {
-                    println!("Starting server on {}", address_clone);
-                    sender.send("WAIT".to_string());
-                    match TcpListener::bind(&address_clone) {
+                    println!("Starting server on {}", address);
+                    sender.send(Message::UpdateDisplay("Starting server...\n".to_string()));
+                    
+                    match TcpListener::bind(&address) {
                         Ok(listener) => {
-                            sender.send("SERVER_STARTED".to_string());
+                            sender.send(Message::UpdateDisplay("Server started, waiting for clients...\n".to_string()));
                             match listener.accept() {
-                                Ok((stream, addr)) => {
+                                Ok((mut stream, addr)) => {
                                     println!("Client connected from: {}", addr);
-                                    sender.send(format!("CLIENT_CONNECTED:{}", addr));
+                                    
+                                    let mut buffer = [0u8; 1024];
+                                    match stream.read(&mut buffer) {
+                                        Ok(n) => {
+                                            if let Ok(name) = String::from_utf8(buffer[..n-1].to_vec()) {
+                                                let msg = format!("User {} joined the chat\n", name);
+                                                sender.send(Message::UpdateDisplay(msg));
+                                                sender.send(Message::UserList(format!("Users: 1")));
+                                            }
+                                        }
+                                        Err(e) => println!("Error reading username: {}", e),
+                                    }
                                     Ok(stream)
                                 }
-                                Err(e) => {
-                                    sender.send(format!("ERROR:{}", e));
-                                    Err(e)
-                                }
+                                Err(e) => Err(e),
                             }
                         }
-                        Err(e) => {
-                            sender.send(format!("ERROR:{}", e));
-                            Err(e)
-                        }
+                        Err(e) => Err(e),
                     }
                 }
                 "client" => {
-                    sender.send("CONNECTING".to_string());
-                    match TcpStream::connect(&address_clone) {
-                        Ok(stream) => {
-                            println!("Client connected successfully");
-                            sender.send("CONNECTED".to_string());
+                    sender.send(Message::UpdateDisplay(format!("Connecting to {}...\n", address)));
+                    match TcpStream::connect(&address) {
+                        Ok(mut stream) => {
+                            writeln!(stream, "{}", username).unwrap();
+                            stream.flush().unwrap();
+                            
+                            sender.send(Message::UpdateDisplay("Connected successfully\n".to_string()));
                             Ok(stream)
                         }
-                        Err(e) => {
-                            sender.send(format!("ERROR:{}", e));
-                            Err(e)
-                        }
+                        Err(e) => Err(e),
                     }
                 }
                 _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "Invalid mode")),
@@ -131,57 +145,36 @@ impl NetworkChat {
                     if let Ok(_) = stream.set_nonblocking(true) {
                         let mut lock = stream_container_clone.lock().unwrap();
                         *lock = Some(stream);
-                        sender.send("SUCCESS".to_string());
+                        sender.send(Message::UpdateDisplay("Connected successfully\n".to_string()));
                     }
                 }
                 Err(e) => {
-                    sender.send(format!("ERROR:{}", e));
+                    sender.send(Message::Error(format!("Connection error: {}\n", e)));
                 }
             }
         });
 
-        // Handle UI updates in the main thread
         while self.window.shown() {
             if let Some(msg) = receiver.recv() {
-                match msg.as_str() {
-                    "WAIT" => {
-                        self.status_label.set_label("Status: Waiting for client...");
-                        self.status_label.set_label_color(Color::Yellow);
-                    }
-                    "SERVER_STARTED" => {
-                        self.display_buffer.append("Server started, waiting for connection...\n");
-                    }
-                    "CONNECTING" => {
-                        self.status_label.set_label("Status: Connecting to server...");
-                        self.status_label.set_label_color(Color::Yellow);
-                        self.display_buffer.append(&format!("Connecting to {}...\n", address));
-                    }
-                    "CONNECTED" | "SUCCESS" => {
+                match msg {
+                    Message::UpdateDisplay(text) => {
+                        self.display_buffer.append(&text);
                         self.status_label.set_label("Status: Connected");
                         self.status_label.set_label_color(Color::Green);
                         self.send_button.activate();
-                        break;
                     }
-                    msg if msg.starts_with("CLIENT_CONNECTED:") => {
-                        let addr = msg.split(':').nth(1).unwrap_or("unknown");
-                        self.display_buffer.append(&format!("Client connected from: {}\n", addr));
-                        self.status_label.set_label("Status: Connected");
-                        self.status_label.set_label_color(Color::Green);
-                        self.send_button.activate();
-                        break;
-                    }
-                    msg if msg.starts_with("ERROR:") => {
-                        let error = msg.split(':').nth(1).unwrap_or("Unknown error");
-                        self.status_label.set_label(&format!("Status: Connection failed - {}", error));
+                    Message::Error(text) => {
+                        self.display_buffer.append(&text);
+                        self.status_label.set_label("Status: Error");
                         self.status_label.set_label_color(Color::Red);
-                        self.display_buffer.append(&format!("Connection error: {}\n", error));
-                        break;
                     }
-                    _ => {}
+                    Message::UserList(text) => {
+                        self.users_label.set_label(&text);
+                    }
                 }
                 app::flush();
             }
-            app::wait_for(0.1);
+            app::wait();
         }
 
         let mut lock = stream_container.lock().unwrap();
@@ -193,21 +186,21 @@ impl NetworkChat {
     fn run(&mut self, mode: String, address: String) {
         self.connect(mode, address);
         
-        // Set up callbacks only if we have a stream
         if let Some(stream) = self.stream.as_ref() {
             let stream_write = stream.try_clone().expect("Failed to clone stream");
             let mut input = self.input.clone();
             let mut display_buffer = self.display_buffer.clone();
+            let username = self.username.clone();
             
             let stream_write = Arc::new(Mutex::new(stream_write));
             let stream_write_clone = stream_write.clone();
             
-            // Set up send button callback
+            // Simplified send button callback to match network_chat.rs
             self.send_button.set_callback(move |_| {
                 let message = input.value();
                 if !message.is_empty() {
                     if let Ok(mut stream) = stream_write.lock() {
-                        match writeln!(&mut *stream, "{}", message) {
+                        match writeln!(&mut *stream, "{}: {}", username, message) {
                             Ok(_) => {
                                 if let Ok(_) = stream.flush() {
                                     display_buffer.append(&format!("Me: {}\n", message));
@@ -222,16 +215,17 @@ impl NetworkChat {
                 }
             });
             
-            // Set up Enter key handler
             let mut input = self.input.clone();
             let mut display_buffer = self.display_buffer.clone();
+            let username = self.username.clone();
             
+            // Simplified Enter key handler to match network_chat.rs
             input.handle(move |i, ev| {
                 if ev == Event::KeyDown && app::event_key() == Key::Enter {
                     let message = i.value();
                     if !message.is_empty() {
                         if let Ok(mut stream) = stream_write_clone.lock() {
-                            match writeln!(&mut *stream, "{}", message) {
+                            match writeln!(&mut *stream, "{}: {}", username, message) {
                                 Ok(_) => {
                                     if let Ok(_) = stream.flush() {
                                         display_buffer.append(&format!("Me: {}\n", message));
@@ -250,7 +244,6 @@ impl NetworkChat {
                 }
             });
             
-            // Set up message receiving thread with a channel for UI updates
             let mut stream_read = stream.try_clone().expect("Failed to clone stream");
             let (sender, receiver) = app::channel::<Message>();
             
@@ -260,7 +253,9 @@ impl NetworkChat {
                     match stream_read.read(&mut buffer) {
                         Ok(n) if n > 0 => {
                             if let Ok(message) = String::from_utf8(buffer[..n].to_vec()) {
-                                sender.send(Message::UpdateDisplay(format!("Other: {}", message)));
+                                if !message.trim().is_empty() {
+                                    sender.send(Message::UpdateDisplay(format!("{}", message)));
+                                }
                             }
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -275,10 +270,8 @@ impl NetworkChat {
                 }
             });
 
-            // Handle received messages in the main thread
             let mut display_buffer = self.display_buffer.clone();
             while self.window.shown() {
-                // Handle received messages
                 if let Some(msg) = receiver.recv() {
                     match msg {
                         Message::UpdateDisplay(text) => {
@@ -286,6 +279,9 @@ impl NetworkChat {
                         }
                         Message::Error(text) => {
                             display_buffer.append(&text);
+                        }
+                        Message::UserList(text) => {
+                            self.users_label.set_label(&text);
                         }
                     }
                 }
@@ -299,23 +295,6 @@ impl NetworkChat {
     }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    
-    if args.len() != 3 {
-        println!("Usage: cargo run --bin network_chat <mode> <address>");
-        println!("\nExamples:");
-        println!("  Server: cargo run --bin network_chat server 0.0.0.0:8080");
-        println!("  Client: cargo run --bin network_chat client 192.168.0.108:8080");
-        return;
-    }
-    
-    let mode = args[1].clone();
-    let address = args[2].clone();
-    
-    let mut chat = NetworkChat::new(mode.clone(), address.clone());
-    chat.run(mode, address);
-}
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     
